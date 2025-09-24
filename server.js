@@ -1,71 +1,61 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const cors = require("cors");
-const mysql = require("mysql2");
-require("dotenv").config();
+// ------------------- TRANSLATIONS ROUTES ------------------- //
 
-const app = express();
-app.use(cors());
-app.use(bodyParser.json());
+// Get artifact with translation (if available)
+app.get("/artifacts/:id/translation/:lang", (req, res) => {
+  const { id, lang } = req.params;
 
-// Database connection
-const db = mysql.createConnection({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASS,
-  database: process.env.DB_NAME,
-});
+  const sql = `
+    SELECT a.artifact_id, 
+           COALESCE(t.translated_name, a.name) AS name,
+           COALESCE(t.translated_description, a.description) AS description,
+           a.origin, a.year_estimated, a.image_url,
+           c.category_name, l.language_name
+    FROM Artifacts a
+    LEFT JOIN Categories c ON a.category_id = c.category_id
+    LEFT JOIN Languages l ON l.language_name = ?
+    LEFT JOIN Artifact_Translations t 
+           ON a.artifact_id = t.artifact_id 
+           AND l.language_id = t.language_id
+    WHERE a.artifact_id = ?
+  `;
 
-db.connect((err) => {
-  if (err) {
-    console.error("Database connection failed:", err);
-    return;
-  }
-  console.log("✅ Connected to MySQL Database");
-});
-
-// Routes
-app.get("/", (req, res) => {
-  res.json({ message: "Welcome to AI-based Museum Artifact Info System" });
-});
-
-// Get all artifacts
-app.get("/artifacts", (req, res) => {
-  db.query("SELECT * FROM Artifacts", (err, results) => {
-    if (err) res.status(500).json({ error: err.message });
-    else res.json(results);
+  db.query(sql, [lang, id], (err, results) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (results.length === 0) return res.status(404).json({ error: "Artifact not found" });
+    res.json(results[0]);
   });
 });
 
-// Search artifact by name
-app.get("/search/:name", (req, res) => {
-  const { name } = req.params;
-  db.query(
-    "SELECT * FROM Artifacts WHERE name LIKE ?",
-    [`%${name}%`],
-    (err, results) => {
-      if (err) res.status(500).json({ error: err.message });
-      else res.json(results);
-    }
-  );
+// Add translation (admin only)
+app.post("/artifacts/:id/translation", authenticateToken, authorizeRole(["admin"]), (req, res) => {
+  const { id } = req.params;
+  const { language_id, translated_name, translated_description } = req.body;
+
+  const sql = `
+    INSERT INTO Artifact_Translations (artifact_id, language_id, translated_name, translated_description)
+    VALUES (?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE 
+      translated_name = VALUES(translated_name),
+      translated_description = VALUES(translated_description)
+  `;
+
+  db.query(sql, [id, language_id, translated_name, translated_description], (err, result) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.status(201).json({ message: "✅ Translation added/updated" });
+  });
 });
 
-// Add new artifact
-app.post("/add_artifact", (req, res) => {
-  const { name, description, origin, year_estimated, category_id, image_url } =
-    req.body;
-  db.query(
-    "INSERT INTO Artifacts (name, description, origin, year_estimated, category_id, image_url) VALUES (?, ?, ?, ?, ?, ?)",
-    [name, description, origin, year_estimated, category_id, image_url],
-    (err, result) => {
-      if (err) res.status(500).json({ error: err.message });
-      else res.json({ message: "Artifact added", id: result.insertId });
-    }
-  );
-});
-
-// Start server
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+// Get all available translations for an artifact
+app.get("/artifacts/:id/translations", (req, res) => {
+  const { id } = req.params;
+  const sql = `
+    SELECT t.translation_id, l.language_name, t.translated_name, t.translated_description
+    FROM Artifact_Translations t
+    JOIN Languages l ON t.language_id = l.language_id
+    WHERE t.artifact_id = ?
+  `;
+  db.query(sql, [id], (err, results) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(results);
+  });
 });
